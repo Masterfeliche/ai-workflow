@@ -1,0 +1,89 @@
+# Agentic Workflow Configuration (v2)
+# Consumed by scripts/ai-feature.py. Keys here map 1:1 to runtime behavior —
+# if a key is removed from this file, the corresponding check is skipped
+# (fails open), never silently enforced from a hardcoded default.
+
+workflow:
+  phases: [intelligence, analysis, plan, execute, verify, final]
+  jira_style: true
+
+commit_rule:
+  format: "type(scope): description"
+  types: [feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert]
+  imperative: true
+  max_chars: 72
+  forbidden_punctuation: [".", ";", ":"]
+
+intelligence:
+  enabled: true
+  artifacts:
+    codebase: "docs/architecture/CODEBASE_INTELLIGENCE.md"
+    system: "docs/architecture/SYSTEM_ARCHITECTURE.md"
+    data: "docs/architecture/DATA_ARCHITECTURE.md"
+    security: "docs/architecture/SECURITY_ARCHITECTURE.md"
+    technology_map: "docs/kb/TECHNOLOGY_MAP.md"
+    development_guide: "docs/kb/DEVELOPMENT_GUIDE.md"
+    gotchas: "docs/kb/GOTCHAS.md"
+  freshness:
+    # Intelligence is REFRESH REQUIRED when the recorded repository_revision
+    # no longer matches HEAD's short hash. Purely mechanical (see
+    # `intelligence status`); it does NOT prove the content is still
+    # accurate, only that it hasn't been re-checked since new commits landed.
+    revision_tracking: git_rev_parse_short
+  policy:
+    full_refresh_triggers:
+      - first_initialization
+      - major_architecture_change
+      - major_dependency_change
+      - new_application_or_service
+      - database_redesign
+    targeted_review_triggers:
+      - undocumented_module
+      - unfamiliar_technology
+      - unknown_execution_path
+      - security_sensitive_change
+      - integration_change
+
+feature_analysis:
+  required_sections:
+    - execution_path
+    - affected_files
+    - dependencies
+    - data_impact
+    - security_impact
+    - integration_impact
+    - test_impact
+    - blast_radius
+    - risks
+    - assumptions
+    - unknowns
+
+execution:
+  atomic_subtasks: true
+  require_tests: true
+  require_verification: true
+  one_subtask_at_a_time: true
+
+final:
+  require_regression: true
+  require_dod: true
+  require_pr_summary: true
+
+templates:
+  feature_source: "docs/features/template/README.md"
+  feature_manifest: "docs/features/{{ticket_id}}/README.md"
+
+state:
+  file: ".ai-workflow-state.json"
+
+docs:
+  root: "docs/"
+  architecture: "docs/architecture/"
+  knowledge_base: "docs/kb/"
+  features: "docs/features/"
+  guides: "docs/guides/"
+  api: "docs/api/"
+
+git_hook:
+  path: ".git/hooks/commit-msg"
+  installer: "scripts/install-hooks.py"
