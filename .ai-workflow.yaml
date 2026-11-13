@@ -88,7 +88,7 @@ learning:
 knowledge:
   canonical_source: git_versioned_documents
   records_path: "knowledge/records"
-  sources: [README.md, AGENTS.md, docs/architecture, docs/design, docs/features, docs/kb, docs/sprints]
+  sources: [README.md, AGENTS.md, docs/architecture, docs/design, docs/features, docs/guides, docs/kb, docs/sprints]
   index_path: ".ai-workflow/cache/knowledge.sqlite3"
   chunk_max_chars: 5000
   chunk_overlap_chars: 350
