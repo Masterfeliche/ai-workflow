@@ -335,7 +335,7 @@ def check_design_evidence(ticket):
     missing = []
     classification = field_body(document, "Design Classification")
     allowed = config_value(CONFIG, "design", "classifications", default=[])
-    if not classification or classification.splitlines()[0].strip().lower() not in allowed:
+    if not classification or classification.splitlines()[0].strip().lstrip("-* ").lower() not in allowed:
         missing.append(f"Design Classification must be one of: {', '.join(allowed)}")
     for label in ["Rationale", "Design Artifacts (paths and revisions)", "Related EDD / ADRs", "Review Outcome", "Reviewer and approval evidence"]:
         body = field_body(document, label)
