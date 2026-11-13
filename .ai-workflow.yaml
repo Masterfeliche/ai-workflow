@@ -1,19 +1,17 @@
-# Agentic Workflow Configuration (v2)
-# Consumed by scripts/ai-feature.py. Keys here map 1:1 to runtime behavior —
-# if a key is removed from this file, the corresponding check is skipped
-# (fails open), never silently enforced from a hardcoded default.
-
+# AI Workflow v3 configuration. Runtime-owned settings are validated by scripts/ai-feature.py validate-config.
+# Keep this file technology-independent; project stacks belong to project context.
+version: "3.0.0"
 workflow:
-  phases: [intelligence, analysis, plan, execute, verify, final]
+  phases: [intelligence, analysis, design, plan, execute, verify, learn, final]
   jira_style: true
-
+  design_assessment_required: true
+  human_approval_for_high_risk: true
 commit_rule:
   format: "type(scope): description"
   types: [feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert]
   imperative: true
   max_chars: 72
   forbidden_punctuation: [".", ";", ":"]
-
 intelligence:
   enabled: true
   artifacts:
@@ -25,10 +23,6 @@ intelligence:
     development_guide: "docs/kb/DEVELOPMENT_GUIDE.md"
     gotchas: "docs/kb/GOTCHAS.md"
   freshness:
-    # Intelligence is REFRESH REQUIRED when the recorded repository_revision
-    # no longer matches HEAD's short hash. Purely mechanical (see
-    # `intelligence status`); it does NOT prove the content is still
-    # accurate, only that it hasn't been re-checked since new commits landed.
     revision_tracking: git_rev_parse_short
   policy:
     full_refresh_triggers:
@@ -43,7 +37,6 @@ intelligence:
       - unknown_execution_path
       - security_sensitive_change
       - integration_change
-
 feature_analysis:
   required_sections:
     - execution_path
@@ -57,33 +50,68 @@ feature_analysis:
     - risks
     - assumptions
     - unknowns
-
+design:
+  enabled: true
+  classifications: [full, targeted, existing_design, not_required]
+  full_design_triggers:
+    - new_system_or_service
+    - new_domain_or_major_module
+    - data_model_redesign
+    - external_payment_or_financial_flow
+    - identity_or_authorization_redesign
+    - distributed_or_event_driven_workflow
+    - major_infrastructure_change
+  targeted_design_triggers:
+    - new_api_or_integration
+    - new_persistence_behavior
+    - cross_module_change
+    - performance_sensitive_change
+  required_references:
+    - design_classification
+    - rationale
+    - design_artifacts
+    - related_edd_or_adr
+    - review_outcome
 execution:
   atomic_subtasks: true
   require_tests: true
   require_verification: true
   one_subtask_at_a_time: true
-
-final:
-  require_regression: true
-  require_dod: true
-  require_pr_summary: true
-
+  require_all_planned_subtasks_complete: true
+learning:
+  enabled: true
+  feature_learning_required: true
+  sprint_learning_pack_required: true
+  require_source_references: true
+  require_engineer_review: true
+  publish_only_after_approval: true
+knowledge:
+  canonical_source: git_versioned_documents
+  lifecycle: [draft, under_review, approved, deprecated, superseded]
+  require_provenance: true
+  require_scope: true
+  require_version: true
+  retrieval_interfaces: [rest_openapi, mcp, markdown_json_export]
+  derived_indexes_are_authoritative: false
+state:
+  file: ".ai-workflow-state.json"
+  feature_dir: ".ai-workflow/state/features"
+  sprint_dir: "docs/sprints"
 templates:
   feature_source: "docs/features/template/README.md"
   feature_manifest: "docs/features/{{ticket_id}}/README.md"
-
-state:
-  file: ".ai-workflow-state.json"
-
+  sprint_plan: "docs/sprints/templates/SPRINT_PLAN.md"
+  sprint_summary: "docs/sprints/templates/SPRINT_SUMMARY.md"
+  sprint_learning_pack: "docs/sprints/templates/LEARNING_PACK.md"
 docs:
   root: "docs/"
   architecture: "docs/architecture/"
+  design: "docs/design/"
   knowledge_base: "docs/kb/"
   features: "docs/features/"
+  sprints: "docs/sprints/"
   guides: "docs/guides/"
   api: "docs/api/"
-
 git_hook:
   path: ".git/hooks/commit-msg"
   installer: "scripts/install-hooks.py"

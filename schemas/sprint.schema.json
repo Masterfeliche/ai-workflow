@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Engineering Sprint Manifest",
+  "type": "object",
+  "required": ["sprint_id", "project_id", "status", "feature_ids", "learning_objectives"],
+  "properties": {
+    "sprint_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"},
+    "project_id": {"type": "string", "minLength": 1},
+    "status": {"enum": ["planned", "active", "review", "finalized"]},
+    "start_date": {"type": ["string", "null"]},
+    "end_date": {"type": ["string", "null"]},
+    "feature_ids": {"type": "array", "items": {"type": "string"}},
+    "learning_objectives": {"type": "array", "items": {"type": "object"}},
+    "owner": {"type": ["string", "null"]},
+    "updated_at": {"type": ["string", "null"]}
+  },
+  "additionalProperties": false
+}

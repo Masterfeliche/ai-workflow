@@ -1,99 +1,86 @@
 #!/usr/bin/env python3
-"""Workflow state tool for the Agentic Workflow Specification (v2).
+"""Technology-independent feature workflow state and evidence gates (v3).
 
-Stdlib-only (no third-party deps) so it runs identically on any Python 3
-install, Windows/macOS/Linux. Reads .ai-workflow.yaml via a minimal
-hand-rolled block-YAML parser (see `load_config` / `_parse_yaml_block`) --
-no PyYAML dependency. Config keys really do drive runtime behavior: remove
-a key and the corresponding check is skipped (fails open), matching the
-contract documented in .ai-workflow.yaml's own header comment.
+Uses only the Python standard library. Markdown gates check structure and
+traceability, not semantic correctness; tests and human review remain required.
 """
 import json
+import os
 import re
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
 CONFIG_FILE = Path(".ai-workflow.yaml")
-
-PHASES = ["intelligence", "analysis", "plan", "execute", "verify", "final"]
-
-# The scaffold ships every intelligence artifact with this marker until a
-# real Intelligence pass replaces it -- existence alone isn't evidence of
-# content, so the freshness check must also look for the marker's absence.
-NOT_GENERATED_MARKER = "not yet generated"
+TICKET_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+SUBTASK_PATTERN = re.compile(r"^SUB-[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)+$")
 
 
-# --------------------------------------------------------------------------
-# Minimal YAML subset parser (block mappings, block lists, flow lists,
-# scalars) -- just enough for .ai-workflow.yaml's shape. Not a general YAML
-# parser: no anchors, multi-line scalars, or list-of-mappings support.
-# --------------------------------------------------------------------------
-
-def _strip_comment(line):
-    in_squote = in_dquote = False
-    for i, ch in enumerate(line):
-        if ch == "'" and not in_dquote:
-            in_squote = not in_squote
-        elif ch == '"' and not in_squote:
-            in_dquote = not in_dquote
-        elif ch == "#" and not in_squote and not in_dquote:
+def strip_comment(line):
+    single = double = False
+    for i, char in enumerate(line):
+        if char == "'" and not double:
+            single = not single
+        elif char == '"' and not single:
+            double = not double
+        elif char == "#" and not single and not double:
             return line[:i]
     return line
 
 
-def _parse_yaml_scalar(raw):
-    s = raw.strip()
-    if s == "":
+def parse_scalar(raw):
+    value = raw.strip()
+    if value == "":
         return None
-    if len(s) >= 2 and s[0] == s[-1] and s[0] in ("'", '"'):
-        return s[1:-1]
-    if s.lower() == "true":
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+        return value[1:-1]
+    if value.lower() == "true":
         return True
-    if s.lower() == "false":
+    if value.lower() == "false":
         return False
-    if re.match(r"^-?\d+$", s):
-        return int(s)
-    if s.startswith("[") and s.endswith("]"):
-        inner = s[1:-1].strip()
-        return [] if not inner else [_parse_yaml_scalar(x) for x in inner.split(",")]
-    return s
+    if re.fullmatch(r"-?\d+", value):
+        return int(value)
+    if value.startswith("[") and value.endswith("]"):
+        inner = value[1:-1].strip()
+        return [] if not inner else [parse_scalar(part) for part in inner.split(",")]
+    return value
 
 
-def _parse_yaml_block(lines, index, indent):
-    """Parse a block starting at lines[index] whose entries sit at exactly
-    `indent`. Returns (value, next_index); value is a dict, a list, or None
-    for an empty block."""
+def parse_yaml_block(lines, index, indent):
     result = None
     i = index
     while i < len(lines):
-        cur_indent, content = lines[i]
-        if cur_indent < indent:
+        current_indent, content = lines[i]
+        if current_indent < indent:
             break
-        if cur_indent > indent:
-            i += 1  # malformed/stray indentation -- skip defensively
-            continue
+        if current_indent > indent:
+            raise ValueError(f"Unexpected YAML indentation at line {i + 1}")
         if content.startswith("- "):
-            result = [] if result is None else result
-            result.append(_parse_yaml_scalar(content[2:]))
+            if result is None:
+                result = []
+            if not isinstance(result, list):
+                raise ValueError(f"Mixed YAML list and mapping at line {i + 1}")
+            result.append(parse_scalar(content[2:]))
             i += 1
+            continue
+        if result is None:
+            result = {}
+        if not isinstance(result, dict) or ":" not in content:
+            raise ValueError(f"Expected YAML mapping at line {i + 1}")
+        key, _, rest = content.partition(":")
+        key, rest = key.strip(), rest.strip()
+        if not key:
+            raise ValueError(f"Empty YAML key at line {i + 1}")
+        if rest:
+            result[key] = parse_scalar(rest)
+            i += 1
+        elif i + 1 < len(lines) and lines[i + 1][0] > indent:
+            result[key], i = parse_yaml_block(lines, i + 1, lines[i + 1][0])
         else:
-            result = {} if result is None else result
-            if ":" not in content:
-                i += 1
-                continue
-            key, _, rest = content.partition(":")
-            key, rest = key.strip(), rest.strip()
-            if rest:
-                result[key] = _parse_yaml_scalar(rest)
-                i += 1
-            elif i + 1 < len(lines) and lines[i + 1][0] > indent:
-                child, i = _parse_yaml_block(lines, i + 1, lines[i + 1][0])
-                result[key] = child
-            else:
-                result[key] = None
-                i += 1
+            result[key] = None
+            i += 1
     return result, i
 
 
@@ -101,62 +88,72 @@ def load_config():
     if not CONFIG_FILE.exists():
         return {}
     lines = []
-    for raw in CONFIG_FILE.read_text(encoding="utf-8").splitlines():
-        stripped = _strip_comment(raw).rstrip()
-        if stripped.strip() == "":
+    for number, raw in enumerate(CONFIG_FILE.read_text(encoding="utf-8").splitlines(), 1):
+        content = strip_comment(raw).rstrip()
+        if not content.strip():
             continue
-        indent = len(stripped) - len(stripped.lstrip(" "))
-        lines.append((indent, stripped.strip()))
+        indent = len(content) - len(content.lstrip(" "))
+        lines.append((indent, content.strip()))
     if not lines:
         return {}
-    value, _ = _parse_yaml_block(lines, 0, lines[0][0])
-    return value or {}
+    parsed, _ = parse_yaml_block(lines, 0, lines[0][0])
+    return parsed or {}
 
 
-def _config_path(config, *keys):
+def config_value(config, *keys, default=None):
     node = config
-    for k in keys:
-        if not isinstance(node, dict) or k not in node:
-            return None
-        node = node[k]
+    for key in keys:
+        if not isinstance(node, dict) or key not in node:
+            return default
+        node = node[key]
     return node
 
 
-def _config_paths_list(config, *keys):
-    """A dict-of-paths or list-of-paths config value, flattened to a list of
-    strings. Missing/malformed -> empty list (fails open, per contract)."""
-    node = _config_path(config, *keys)
-    if isinstance(node, dict):
-        return [v for v in node.values() if isinstance(v, str)]
-    if isinstance(node, list):
-        return [v for v in node if isinstance(v, str)]
-    return []
+try:
+    CONFIG = load_config()
+except (OSError, ValueError) as exc:
+    print(f"Configuration error: {exc}", file=sys.stderr)
+    CONFIG = {}
 
-
-def _title_case(snake_key):
-    return " ".join(w.capitalize() for w in snake_key.split("_"))
-
-
-CONFIG = load_config()
-
-STATE_FILE = Path(_config_path(CONFIG, "state", "file") or ".ai-workflow-state.json")
-TEMPLATE_PATH = Path(_config_path(CONFIG, "templates", "feature_source") or "docs/features/template/README.md")
-
-INTELLIGENCE_ARTIFACTS = _config_paths_list(CONFIG, "intelligence", "artifacts")
-
+PHASES = config_value(
+    CONFIG, "workflow", "phases",
+    default=["intelligence", "analysis", "design", "plan", "execute", "verify", "learn", "final"],
+)
+ACTIVE_FILE = Path(config_value(CONFIG, "state", "file", default=".ai-workflow-state.json"))
+FEATURE_STATE_DIR = Path(config_value(CONFIG, "state", "feature_dir", default=".ai-workflow/state/features"))
+TEMPLATE_PATH = Path(config_value(CONFIG, "templates", "feature_source", default="docs/features/template/README.md"))
+INTELLIGENCE_ARTIFACTS = config_value(CONFIG, "intelligence", "artifacts", default={})
 FEATURE_ANALYSIS_SECTIONS = [
-    _title_case(s) for s in _config_paths_list(CONFIG, "feature_analysis", "required_sections")
+    " ".join(part.capitalize() for part in str(name).split("_"))
+    for name in config_value(CONFIG, "feature_analysis", "required_sections", default=[])
 ]
+NOT_GENERATED_MARKER = "not yet generated"
 
 
-# --------------------------------------------------------------------------
-# State I/O
-# --------------------------------------------------------------------------
+def utc_now():
+    return datetime.now(timezone.utc).isoformat()
 
-def default_state():
+
+def validate_ticket(ticket):
+    if not TICKET_PATTERN.fullmatch(ticket or "") or ticket in {".", ".."}:
+        raise ValueError("Ticket ID must match [A-Za-z0-9][A-Za-z0-9._-]{0,63}; path separators are not allowed.")
+    return ticket
+
+
+def feature_readme(ticket):
+    validate_ticket(ticket)
+    return Path("docs/features") / ticket / "README.md"
+
+
+def feature_state_path(ticket):
+    validate_ticket(ticket)
+    return FEATURE_STATE_DIR / f"{ticket}.json"
+
+
+def default_state(ticket=None):
     return {
-        "ticket_id": None,
-        "phase": "idle",
+        "ticket_id": ticket,
+        "phase": "intelligence" if ticket else "idle",
         "intelligence_status": "unknown",
         "current_subtask": None,
         "completed_subtasks": [],
@@ -166,224 +163,322 @@ def default_state():
     }
 
 
+def atomic_json_write(path, value):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False)
+    try:
+        with handle:
+            json.dump(value, handle, indent=2)
+            handle.write("\n")
+        os.replace(handle.name, path)
+    finally:
+        if os.path.exists(handle.name):
+            os.unlink(handle.name)
+
+
+def read_json(path):
+    with path.open("r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
 def load_state():
-    if STATE_FILE.exists():
-        with STATE_FILE.open("r", encoding="utf-8") as f:
-            state = json.load(f)
-        merged = default_state()
-        merged.update(state)
-        return merged
-    return default_state()
+    if not ACTIVE_FILE.exists():
+        return default_state()
+    active = read_json(ACTIVE_FILE)
+    ticket = active.get("active_ticket_id") or active.get("ticket_id")
+    if not ticket:
+        return default_state()
+    validate_ticket(ticket)
+    per_feature = feature_state_path(ticket)
+    if per_feature.exists():
+        state = default_state(ticket)
+        state.update(read_json(per_feature))
+        return state
+    # Backward compatibility: v2 stored the complete active feature state here.
+    state = default_state(ticket)
+    state.update(active)
+    return state
 
 
 def save_state(state):
-    state["updated_at"] = datetime.now(timezone.utc).isoformat()
-    with STATE_FILE.open("w", encoding="utf-8") as f:
-        json.dump(state, f, indent=2)
-        f.write("\n")
+    state["updated_at"] = utc_now()
+    ticket = state.get("ticket_id")
+    if ticket:
+        validate_ticket(ticket)
+        atomic_json_write(feature_state_path(ticket), state)
+        atomic_json_write(ACTIVE_FILE, {
+            "active_ticket_id": ticket,
+            "updated_at": state["updated_at"],
+            "state_version": 3,
+        })
+    else:
+        atomic_json_write(ACTIVE_FILE, {"active_ticket_id": None, "updated_at": state["updated_at"], "state_version": 3})
 
 
-def git_revision(warn=False):
+def git_revision():
     try:
-        out = subprocess.run(
+        result = subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"],
             capture_output=True, text=True, check=True,
         )
-        return out.stdout.strip()
-    except Exception:
-        if warn:
-            print(
-                "Warning: could not resolve git HEAD (no commits yet, or not a "
-                "git repository) -- revision-based staleness detection is "
-                "disabled until this repo has commit history.",
-                file=sys.stderr,
-            )
+        return result.stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
         return None
 
 
-def feature_readme(ticket):
-    return Path("docs/features") / ticket / "README.md"
-
-
-# --------------------------------------------------------------------------
-# Evidence checks (best-effort, text-based -- see AGENTS.md Part 21)
-# --------------------------------------------------------------------------
-
-def section_body(text, heading):
-    """Return the text under a `## heading` line up to the next `##`."""
-    pattern = rf"^##\s+.*{re.escape(heading)}.*$"
-    lines = text.splitlines()
+def section_body(document, heading):
+    lines = document.splitlines()
     start = None
-    for i, line in enumerate(lines):
-        if re.match(pattern, line, re.IGNORECASE):
-            start = i + 1
+    pattern = re.compile(r"^##\s+.*" + re.escape(heading) + r".*$", re.IGNORECASE)
+    for index, line in enumerate(lines):
+        if pattern.match(line):
+            start = index + 1
             break
     if start is None:
         return None
-    end = len(lines)
-    for i in range(start, len(lines)):
-        if lines[i].startswith("## "):
-            end = i
-            break
-    return "\n".join(lines[start:end]).strip()
+    for end in range(start, len(lines)):
+        if lines[end].startswith("## "):
+            return "\n".join(lines[start:end]).strip()
+    return "\n".join(lines[start:]).strip()
 
 
-def bold_label_body(text, label):
-    """Return the text under a `**Label**...:` line up to the next blank
-    line or the next `**Label**` line -- matches the SSOT template's style
-    of bold sub-labels within a `##` section, e.g. `**Execution Path**:`."""
-    pattern = rf"^\*\*{re.escape(label)}\*\*.*$"
-    lines = text.splitlines()
-    start = None
-    for i, line in enumerate(lines):
-        if re.match(pattern, line, re.IGNORECASE):
-            start = i + 1
-            break
-    if start is None:
-        return None
-    end = len(lines)
-    for i in range(start, len(lines)):
-        stripped = lines[i].strip()
-        if stripped.startswith("**") or stripped == "" or stripped.startswith("##") or stripped == "---":
-            end = i
-            break
-    return "\n".join(lines[start:end]).strip()
+def field_body(document, label):
+    lines = document.splitlines()
+    pattern = re.compile(r"^\*\*" + re.escape(label) + r":\*\*\s*(.*)$", re.IGNORECASE)
+    for index, line in enumerate(lines):
+        match = pattern.match(line.strip())
+        if match:
+            values = [match.group(1).strip()] if match.group(1).strip() else []
+            for following in lines[index + 1:]:
+                stripped = following.strip()
+                if stripped.startswith("**") or stripped.startswith("## "):
+                    break
+                if not stripped and values:
+                    break
+                if stripped:
+                    values.append(stripped)
+            return "\n".join(values).strip()
+    return None
 
 
-def is_placeholder(body):
-    if body is None:
+def is_placeholder(value):
+    if value is None:
         return True
-    stripped = body.strip()
-    if not stripped:
+    text = value.strip()
+    if not text:
         return True
-    # A lone bullet, dash, or unresolved {{token}} counts as unfilled.
-    cleaned = re.sub(r"[-*\s]", "", stripped)
-    if cleaned == "":
+    if re.fullmatch(r"[-*\s]+", text):
         return True
-    if "{{" in stripped and "}}" in stripped:
+    if "{{" in text and "}}" in text:
+        return True
+    if text.lower() in {"todo", "tbd", "none", "n/a"}:
         return True
     return False
 
 
+def read_feature(ticket):
+    path = feature_readme(ticket)
+    if not path.exists():
+        return None, f"SSOT README does not exist: {path}"
+    return path.read_text(encoding="utf-8"), None
+
+
 def check_intelligence_evidence():
     missing = []
-    for p in INTELLIGENCE_ARTIFACTS:
-        path = Path(p)
-        if not path.exists():
-            missing.append(f"{p} does not exist")
+    if not isinstance(INTELLIGENCE_ARTIFACTS, dict) or not INTELLIGENCE_ARTIFACTS:
+        return ["intelligence.artifacts is missing or empty in .ai-workflow.yaml"]
+    for path_value in INTELLIGENCE_ARTIFACTS.values():
+        if not isinstance(path_value, str):
+            missing.append("an intelligence artifact path is not a string")
             continue
-        text = path.read_text(encoding="utf-8")
-        if NOT_GENERATED_MARKER in text.lower():
-            missing.append(f"{p} still marked '{NOT_GENERATED_MARKER}'")
+        path = Path(path_value)
+        if not path.exists():
+            missing.append(f"{path_value} does not exist")
+        elif NOT_GENERATED_MARKER in path.read_text(encoding="utf-8").lower():
+            missing.append(f"{path_value} is still marked '{NOT_GENERATED_MARKER}'")
     return missing
 
 
+def planned_subtasks(document):
+    body = section_body(document, "Implementation Plan") or ""
+    result = []
+    for line in body.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            continue
+        if re.match(r"^\|\s*-+\s*\|", stripped) or re.match(r"^\|\s*Subtask Key\s*\|", stripped, re.I):
+            continue
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        if len(cells) >= 3 and SUBTASK_PATTERN.fullmatch(cells[0]):
+            if not cells[1] or not cells[2]:
+                continue
+            result.append(cells[0])
+    return result
+
+
 def check_analysis_evidence(ticket):
-    readme = feature_readme(ticket)
-    if not readme.exists():
-        return ["SSOT README does not exist"]
-    text = readme.read_text(encoding="utf-8")
+    document, error = read_feature(ticket)
+    if error:
+        return [error]
     missing = []
-    for section in FEATURE_ANALYSIS_SECTIONS:
-        body = bold_label_body(text, section)
+    for heading in FEATURE_ANALYSIS_SECTIONS:
+        body = field_body(document, heading)
         if is_placeholder(body):
-            missing.append(f"Analysis section '{section}' is empty or unfilled")
+            missing.append(f"Analysis field '{heading}' is empty or unfilled")
+    return missing
+
+
+def check_design_evidence(ticket):
+    document, error = read_feature(ticket)
+    if error:
+        return [error]
+    missing = []
+    classification = field_body(document, "Design Classification")
+    allowed = config_value(CONFIG, "design", "classifications", default=[])
+    if not classification or classification.splitlines()[0].strip().lstrip("-* ").lower() not in allowed:
+        missing.append(f"Design Classification must be one of: {', '.join(allowed)}")
+    for label in ["Rationale", "Design Artifacts (paths and revisions)", "Related EDD / ADRs", "Review Outcome", "Reviewer and approval evidence"]:
+        body = field_body(document, label)
+        if is_placeholder(body):
+            missing.append(f"Design field '{label}' is empty or unfilled")
+    outcome = field_body(document, "Review Outcome") or ""
+    if classification and classification.splitlines()[0].strip().lower() in {"full", "targeted"}:
+        if not re.search(r"\b(accepted|approved|proposed|rejected)\b", outcome, re.I):
+            missing.append("Full/targeted design must record a review outcome")
     return missing
 
 
 def check_plan_evidence(ticket):
-    readme = feature_readme(ticket)
-    if not readme.exists():
-        return ["SSOT README does not exist"]
-    text = readme.read_text(encoding="utf-8")
+    document, error = read_feature(ticket)
+    if error:
+        return [error]
+    tasks = planned_subtasks(document)
     missing = []
-    plan_body = section_body(text, "Implementation Plan")
-    if is_placeholder(plan_body):
-        missing.append("Implementation Plan has no subtasks")
-        return missing
-
-    # The template ships a literal example row (`| SUB-1.1 | | | | [ ] |`),
-    # so a bare substring search for "SUB-" would pass on an untouched
-    # template. Require at least one data row with a real subtask key AND
-    # a non-empty Summary or Acceptance Criteria cell.
-    has_real_subtask = False
-    for line in plan_body.splitlines():
-        stripped = line.strip()
-        if not stripped.startswith("|"):
-            continue
-        if re.match(r"^\|?\s*-+\s*\|", stripped) or re.match(r"^\|\s*Subtask Key\s*\|", stripped, re.IGNORECASE):
-            continue
-        cells = [c.strip() for c in stripped.strip("|").split("|")]
-        if len(cells) >= 3 and cells[0].startswith("SUB-") and (cells[1] or cells[2]):
-            has_real_subtask = True
-            break
-    if not has_real_subtask:
-        missing.append("Implementation Plan has no filled-in Jira-style subtask (SUB-x.y) rows")
+    if not tasks:
+        missing.append("Implementation Plan needs at least one unique SUB-x.y row with summary and acceptance criteria")
+    if len(tasks) != len(set(tasks)):
+        missing.append("Implementation Plan contains duplicate subtask keys")
     return missing
 
 
-def check_execution_evidence(ticket):
-    readme = feature_readme(ticket)
-    if not readme.exists():
-        return ["SSOT README does not exist"]
-    text = readme.read_text(encoding="utf-8")
+def check_execution_evidence(ticket, state):
+    document, error = read_feature(ticket)
+    if error:
+        return [error]
+    tasks = planned_subtasks(document)
+    completed = set(state.get("completed_subtasks") or [])
+    log = section_body(document, "Execution Log") or ""
     missing = []
-    log_body = section_body(text, "Execution Log")
-    if is_placeholder(log_body):
-        missing.append("Execution Log has no entries")
-    elif "[x]" not in log_body.lower() and "[X]" not in log_body:
-        missing.append("Execution Log has no completed (checked) subtasks")
+    if state.get("current_subtask"):
+        missing.append(f"Subtask {state['current_subtask']} is still marked as current")
+    for task in tasks:
+        if task not in completed:
+            missing.append(f"Planned subtask {task} is not marked complete in workflow state")
+        if not re.search(r"\[x\]\s*" + re.escape(task) + r"\b", log, re.I):
+            missing.append(f"Execution Log lacks a checked evidence entry for {task}")
+    return missing
+
+
+def check_verification_evidence(ticket):
+    document, error = read_feature(ticket)
+    if error:
+        return [error]
+    missing = []
+    for label in ["Test Commands and Results", "Regression Evidence (paths, CI run or report)", "Security Verification (or N/A with rationale)", "Acceptance Criteria Results", "Known Limitations / Unverified Items"]:
+        if is_placeholder(field_body(document, label)):
+            missing.append(f"Verification field '{label}' is empty or unfilled")
+    return missing
+
+
+def check_learning_evidence(ticket):
+    document, error = read_feature(ticket)
+    if error:
+        return [error]
+    missing = []
+    for label in ["Concepts Learned (concept, explanation, why it matters here)", "Implementation Walkthrough (request/data/event flow with real files and symbols)", "Design Decisions Understood (rationale, alternatives, trade-offs)", "Knowledge Delta (proposed record IDs or N/A with rationale)", "Engineer Review (reviewer, date, feedback or gaps)"]:
+        if is_placeholder(field_body(document, label)):
+            missing.append(f"Learning field '{label}' is empty or unfilled")
     return missing
 
 
 def check_final_evidence(ticket):
-    readme = feature_readme(ticket)
-    if not readme.exists():
-        return ["SSOT README does not exist"]
-    text = readme.read_text(encoding="utf-8")
-    missing = []
-    dod_body = section_body(text, "Definition of Done")
-    if dod_body is None:
-        missing.append("Definition of Done section is missing")
-    else:
-        unchecked = re.findall(r"- \[ \] (.+)", dod_body)
-        if unchecked:
-            missing.append(f"{len(unchecked)} unchecked DoD item(s)")
-    return missing
+    document, error = read_feature(ticket)
+    if error:
+        return [error]
+    body = section_body(document, "Definition of Done")
+    if body is None:
+        return ["Definition of Done section is missing"]
+    items = re.findall(r"^- \[([ xX])\] .+", body, flags=re.M)
+    if not items:
+        return ["Definition of Done has no checklist items"]
+    unchecked = sum(1 for item in items if item.lower() != "x")
+    return [f"{unchecked} unchecked Definition of Done item(s)"] if unchecked else []
 
 
-# --------------------------------------------------------------------------
-# Commands
-# --------------------------------------------------------------------------
+def validate_config():
+    expected = ["intelligence", "analysis", "design", "plan", "execute", "verify", "learn", "final"]
+    errors = []
+    if config_value(CONFIG, "version") != "3.0.0":
+        errors.append("version must be 3.0.0")
+    if config_value(CONFIG, "workflow", "phases") != expected:
+        errors.append("workflow.phases does not match the v3 lifecycle")
+    for path in ["workflow", "design", "execution", "learning", "knowledge", "state", "templates"]:
+        if not isinstance(CONFIG.get(path), dict):
+            errors.append(f"missing or invalid top-level configuration section: {path}")
+    for key in ["file", "feature_dir"]:
+        if not isinstance(config_value(CONFIG, "state", key), str):
+            errors.append(f"state.{key} must be a path string")
+    if not FEATURE_ANALYSIS_SECTIONS:
+        errors.append("feature_analysis.required_sections must be a non-empty list")
+    if not isinstance(INTELLIGENCE_ARTIFACTS, dict) or not INTELLIGENCE_ARTIFACTS:
+        errors.append("intelligence.artifacts must be a non-empty mapping")
+    if errors:
+        print("Configuration invalid:")
+        for error in errors:
+            print(f"  - {error}")
+        return False
+    print("Configuration valid: v3 lifecycle and required policy sections are present.")
+    return True
+
+
+def require_ticket(state):
+    if not state.get("ticket_id"):
+        raise ValueError("No active feature. Run ai-feature.py start <TICKET-ID> first.")
+
+
+def require_phase(state, phase):
+    if state.get("phase") != phase:
+        raise ValueError(f"Command requires phase '{phase}', current phase is '{state.get('phase')}'.")
+
 
 def cmd_start(args, state):
-    if len(args) < 1:
-        print("Error: ticket-id required. Usage: ai-feature start <TICKET-ID>")
-        sys.exit(1)
-    ticket = args[0]
-    state["ticket_id"] = ticket
-    state["phase"] = "intelligence"
-    state["intelligence_status"] = "unknown"
-    state["current_subtask"] = None
-    state["completed_subtasks"] = []
-    state["approvals"] = {}
-    state["repository_revision"] = git_revision(warn=True)
-    save_state(state)
-
-    feature_dir = Path("docs/features") / ticket
-    feature_dir.mkdir(parents=True, exist_ok=True)
-    readme_path = feature_dir / "README.md"
-    if not readme_path.exists() and TEMPLATE_PATH.exists():
-        content = TEMPLATE_PATH.read_text(encoding="utf-8").replace("{{ticket_id}}", ticket)
-        readme_path.write_text(content, encoding="utf-8")
-        print(f"Initialized {readme_path} from template.")
-
-    print(f"Feature {ticket} started. Current phase: intelligence.")
-    print("Next: run `ai-feature intelligence check` before analysis.")
+    if not args:
+        raise ValueError("Usage: ai-feature.py start <TICKET-ID>")
+    ticket = validate_ticket(args[0])
+    path = feature_readme(ticket)
+    if not path.exists():
+        if not TEMPLATE_PATH.exists():
+            raise FileNotFoundError(f"Feature template not found: {TEMPLATE_PATH}")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        template = TEMPLATE_PATH.read_text(encoding="utf-8").replace("{{ticket_id}}", ticket).replace("{{summary}}", "Summary required")
+        path.write_text(template, encoding="utf-8")
+        print(f"Initialized {path}")
+    state_path = feature_state_path(ticket)
+    if state_path.exists():
+        next_state = read_json(state_path)
+        print(f"Resuming existing feature {ticket} at phase {next_state.get('phase')}.")
+    elif state.get("ticket_id") == ticket:
+        next_state = state
+    else:
+        next_state = default_state(ticket)
+        next_state["repository_revision"] = git_revision()
+        print(f"Started new feature {ticket}.")
+    next_state["ticket_id"] = ticket
+    save_state(next_state)
 
 
 def cmd_status(args, state):
-    print(f"Ticket ID:            {state.get('ticket_id')}")
+    print(f"Active ticket:         {state.get('ticket_id')}")
     print(f"Phase:                 {state.get('phase')}")
     print(f"Intelligence status:   {state.get('intelligence_status')}")
     print(f"Current subtask:       {state.get('current_subtask')}")
@@ -393,152 +488,130 @@ def cmd_status(args, state):
 
 
 def cmd_intelligence(args, state):
-    sub = args[0] if args else "check"
-    current_rev = git_revision(warn=True)
-    recorded_rev = state.get("repository_revision")
-
-    if sub == "check":
+    require_ticket(state)
+    action = args[0] if args else "check"
+    current = git_revision()
+    if action == "check":
         missing = check_intelligence_evidence()
         if missing:
             state["intelligence_status"] = "refresh_required"
             save_state(state)
             print("Intelligence status: REFRESH REQUIRED")
-            for m in missing:
-                print(f"  - missing: {m}")
+            for item in missing:
+                print(f"  - {item}")
             return
-        if recorded_rev and current_rev and recorded_rev != current_rev:
+        recorded = state.get("repository_revision")
+        if recorded and current and recorded != current:
             state["intelligence_status"] = "stale"
             save_state(state)
-            print(f"Intelligence status: STALE (recorded {recorded_rev}, HEAD is {current_rev})")
+            print(f"Intelligence status: STALE (recorded {recorded}, HEAD is {current})")
             return
         state["intelligence_status"] = "ready"
         save_state(state)
-        print("Intelligence status: READY")
-
-    elif sub in ("refresh", "targeted"):
-        # These record that a human/agent has (re)done the investigation and
-        # regenerated the artifacts; this tool cannot verify the *content*,
-        # only that the files exist and the revision pointer is updated.
+        print("Intelligence status: READY (revision check is a freshness proxy, not semantic validation).")
+    elif action in {"refresh", "targeted"}:
         missing = check_intelligence_evidence()
         if missing:
-            print("Cannot mark intelligence ready -- artifacts still missing:")
-            for m in missing:
-                print(f"  - {m}")
-            sys.exit(1)
+            raise ValueError("Cannot record intelligence review; artifacts are incomplete:\n" + "\n".join(missing))
         state["intelligence_status"] = "ready"
-        state["repository_revision"] = current_rev
+        state["repository_revision"] = current
         save_state(state)
-        label = "Refresh" if sub == "refresh" else "Targeted review"
-        print(f"{label} recorded. Intelligence status: READY (revision {current_rev}).")
-
+        print(f"{action.capitalize()} review recorded at revision {current}.")
     else:
-        print(f"Unknown intelligence subcommand: {sub}. Use check|refresh|targeted.")
-        sys.exit(1)
-
-
-def require_phase(state, expected):
-    if state["phase"] != expected:
-        print(f"Error: command requires phase '{expected}', current phase is '{state['phase']}'")
-        sys.exit(1)
-
-
-def require_ticket(state):
-    if not state.get("ticket_id"):
-        print("Error: no active feature. Run `ai-feature start <TICKET-ID>` first.")
-        sys.exit(1)
+        raise ValueError("Use intelligence check|refresh|targeted.")
 
 
 def cmd_analyze(args, state):
     require_ticket(state)
     require_phase(state, "intelligence")
     if state.get("intelligence_status") != "ready":
-        print("Error: intelligence is not READY. Run `ai-feature intelligence check` (or refresh/targeted).")
-        sys.exit(1)
+        raise ValueError("Intelligence is not READY; investigate and record a refresh/targeted review first.")
     state["phase"] = "analysis"
     save_state(state)
-    print("Entered phase: analysis. Fill in the Feature Analysis section of the SSOT README.")
-
-
-def cmd_plan(args, state):
-    require_ticket(state)
-    if state["phase"] != "plan":
-        print(f"Error: `plan` is reached via `approve analysis`, current phase is '{state['phase']}'")
-        sys.exit(1)
-    print("Already in phase: plan. Fill in the Implementation Plan section of the SSOT README.")
+    print("Entered analysis. Complete Feature Analysis in the feature SSOT.")
 
 
 def cmd_approve(args, state):
     require_ticket(state)
     if not args:
-        print("Error: approve requires a phase name, e.g. `ai-feature approve analysis`")
-        sys.exit(1)
-    phase_to_approve = args[0]
-    current = state["phase"]
-    if phase_to_approve != current:
-        print(f"Error: cannot approve '{phase_to_approve}', current phase is '{current}'")
-        sys.exit(1)
-
+        raise ValueError("Usage: ai-feature.py approve <analysis|design|plan|execute|verify|learn>")
+    phase = args[0]
+    require_phase(state, phase)
     ticket = state["ticket_id"]
     checkers = {
-        "analysis": check_analysis_evidence,
-        "plan": check_plan_evidence,
-        "execute": check_execution_evidence,
-        "verify": check_final_evidence,
+        "analysis": lambda: check_analysis_evidence(ticket),
+        "design": lambda: check_design_evidence(ticket),
+        "plan": lambda: check_plan_evidence(ticket),
+        "execute": lambda: check_execution_evidence(ticket, state),
+        "verify": lambda: check_verification_evidence(ticket),
+        "learn": lambda: check_learning_evidence(ticket),
     }
     transitions = {
-        "analysis": "plan",
+        "analysis": "design",
+        "design": "plan",
         "plan": "execute",
         "execute": "verify",
-        "verify": "final",
+        "verify": "learn",
+        "learn": "final",
     }
-
-    if current not in transitions:
-        print(f"Error: phase '{current}' has no approval gate (nothing to approve).")
-        sys.exit(1)
-
-    missing = checkers[current](ticket)
+    if phase not in transitions:
+        raise ValueError(f"Phase '{phase}' has no approval gate.")
+    missing = checkers[phase]()
     if missing:
-        print(f"Cannot approve '{current}' -- evidence gate failed:")
-        for m in missing:
-            print(f"  - {m}")
-        sys.exit(1)
-
-    state["approvals"][current] = datetime.now(timezone.utc).isoformat()
-    state["phase"] = transitions[current]
+        raise ValueError(f"Cannot approve '{phase}'; evidence gate failed:\n" + "\n".join(f"- {item}" for item in missing))
+    state.setdefault("approvals", {})[phase] = {
+        "approved_at": utc_now(),
+        "repository_revision": git_revision(),
+    }
+    state["phase"] = transitions[phase]
     save_state(state)
-    print(f"{current.capitalize()} approved (evidence gate passed). Current phase: {state['phase']}.")
+    print(f"{phase.capitalize()} approved. Current phase: {state['phase']}.")
 
 
 def cmd_next_subtask(args, state):
     require_ticket(state)
     require_phase(state, "execute")
     if not args:
-        print("Error: usage: ai-feature next-subtask <SUB-KEY>")
-        sys.exit(1)
-    state["current_subtask"] = args[0]
+        raise ValueError("Usage: ai-feature.py next-subtask <SUB-KEY>")
+    key = args[0]
+    document, error = read_feature(state["ticket_id"])
+    if error:
+        raise ValueError(error)
+    tasks = planned_subtasks(document)
+    if key not in tasks:
+        raise ValueError(f"{key} is not present in the approved Implementation Plan.")
+    if key in set(state.get("completed_subtasks") or []):
+        raise ValueError(f"{key} is already marked complete.")
+    if state.get("current_subtask"):
+        raise ValueError(f"Complete or explicitly resolve current subtask {state['current_subtask']} first.")
+    state["current_subtask"] = key
     save_state(state)
-    print(f"Current subtask set to {args[0]}. Inspect -> Implement -> Test -> Verify -> log -> commit.")
+    print(f"Current subtask: {key}. Inspect -> implement -> test -> verify -> log -> commit.")
 
 
 def cmd_complete_subtask(args, state):
     require_ticket(state)
     require_phase(state, "execute")
     if not args:
-        print("Error: usage: ai-feature complete-subtask <SUB-KEY>")
-        sys.exit(1)
+        raise ValueError("Usage: ai-feature.py complete-subtask <SUB-KEY>")
     key = args[0]
-    if key not in state["completed_subtasks"]:
-        state["completed_subtasks"].append(key)
-    if state.get("current_subtask") == key:
-        state["current_subtask"] = None
+    document, error = read_feature(state["ticket_id"])
+    if error:
+        raise ValueError(error)
+    if key not in planned_subtasks(document):
+        raise ValueError(f"{key} is not present in the approved Implementation Plan.")
+    if state.get("current_subtask") != key:
+        raise ValueError(f"{key} is not the current subtask.")
+    state.setdefault("completed_subtasks", []).append(key)
+    state["current_subtask"] = None
     save_state(state)
-    print(f"Subtask {key} marked complete. Update the Execution Log and commit before starting the next one.")
+    print(f"{key} recorded complete. Ensure the SSOT contains a checked evidence entry and commit SHA.")
 
 
 def cmd_verify(args, state):
     require_ticket(state)
     require_phase(state, "verify")
-    print("In phase: verify. Run regression, confirm DoD checklist, document results before `approve verify`.")
+    print("Run relevant tests and regression checks. Record exact commands, results and evidence in the feature SSOT.")
 
 
 def cmd_finalize(args, state):
@@ -546,17 +619,17 @@ def cmd_finalize(args, state):
     require_phase(state, "final")
     missing = check_final_evidence(state["ticket_id"])
     if missing:
-        print("Cannot finalize -- Definition of Done incomplete:")
-        for m in missing:
-            print(f"  - {m}")
-        sys.exit(1)
-    print("Final gate passed. Generate the PR description from the SSOT README and ship.")
+        raise ValueError("Cannot finalize; Definition of Done is incomplete:\n" + "\n".join(missing))
+    state["finalized_at"] = utc_now()
+    state["finalized_revision"] = git_revision()
+    save_state(state)
+    print("Feature finalization gate passed. Generate the PR description from the feature SSOT; this does not merge or deploy.")
 
 
 def cmd_reset(args, state):
-    if STATE_FILE.exists():
-        STATE_FILE.unlink()
-    print("Workflow state reset.")
+    if ACTIVE_FILE.exists():
+        ACTIVE_FILE.unlink()
+    print("Active feature selection cleared. Per-feature state and SSOT documents were preserved.")
 
 
 COMMANDS = {
@@ -564,7 +637,6 @@ COMMANDS = {
     "status": cmd_status,
     "intelligence": cmd_intelligence,
     "analyze": cmd_analyze,
-    "plan": cmd_plan,
     "approve": cmd_approve,
     "next-subtask": cmd_next_subtask,
     "complete-subtask": cmd_complete_subtask,
@@ -576,21 +648,21 @@ COMMANDS = {
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: ai-feature <command> [args]")
-        print("Commands: " + ", ".join(COMMANDS))
-        sys.exit(1)
-
-    command = sys.argv[1]
-    args = sys.argv[2:]
-
-    if command not in COMMANDS:
-        print(f"Unknown command: {command}")
-        print("Commands: " + ", ".join(COMMANDS))
-        sys.exit(1)
-
-    state = load_state()
-    COMMANDS[command](args, state)
+        print("Commands: " + ", ".join([*COMMANDS, "validate-config"]))
+        return 2
+    command, args = sys.argv[1], sys.argv[2:]
+    try:
+        if command == "validate-config":
+            return 0 if validate_config() else 1
+        if command not in COMMANDS:
+            raise ValueError(f"Unknown command: {command}. Commands: {', '.join(COMMANDS)}")
+        state = load_state()
+        COMMANDS[command](args, state)
+        return 0
+    except (ValueError, OSError, json.JSONDecodeError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
