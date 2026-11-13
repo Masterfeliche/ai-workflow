@@ -87,11 +87,16 @@ learning:
   publish_only_after_approval: true
 knowledge:
   canonical_source: git_versioned_documents
+  records_path: "knowledge/records"
+  sources: [README.md, AGENTS.md, docs/architecture, docs/design, docs/features, docs/kb, docs/sprints]
+  index_path: ".ai-workflow/cache/knowledge.sqlite3"
+  chunk_max_chars: 5000
+  chunk_overlap_chars: 350
   lifecycle: [draft, under_review, approved, deprecated, superseded]
   require_provenance: true
   require_scope: true
   require_version: true
-  retrieval_interfaces: [rest_openapi, mcp, markdown_json_export]
+  retrieval_interfaces: [local_cli, rest_openapi, mcp, markdown_json_export]
   derived_indexes_are_authoritative: false
 state:
   file: ".ai-workflow-state.json"
