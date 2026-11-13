@@ -51,6 +51,7 @@ def load_config(root):
     spec = importlib.util.spec_from_file_location("ai_workflow_config", workflow_script)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    module.CONFIG_FILE = config_file
     return module.load_config()
 
 
@@ -177,6 +178,10 @@ def split_text(text, max_chars, overlap):
 
 
 def configured_source_files(root, sources, extra_sources):
+    if sources is not None and not isinstance(sources, list):
+        raise ValueError("knowledge.sources must be a list of repository-relative paths")
+    if extra_sources is not None and not isinstance(extra_sources, list):
+        raise ValueError("additional sources must be supplied as a list")
     selected = list(sources or DEFAULT_SOURCES) + list(extra_sources or [])
     discovered = {}
     for source in selected:
@@ -429,7 +434,7 @@ def decode_row(row):
     item["provenance"] = json.loads(item.pop("provenance_json"))
     item["sources"] = json.loads(item.pop("sources_json"))
     item["relationships"] = json.loads(item.pop("relationships_json"))
-    item.pop("rank", None)
+    item["_retrieval_rank"] = float(item.pop("rank", 0.0) or 0.0)
     return item
 
 
@@ -490,8 +495,10 @@ def search(path, query, project_id=None, scope=None, limit=8, include_drafts=Fal
             title, summary, body = item["title"].lower(), item["summary"].lower(), item["content"].lower()
             matches = sum(4 if t in title else 2 if t in summary else 1 if t in body else 0 for t in tokens)
             authority = {"approved": 3, "under_review": 1, "draft": 0, "deprecated": -1, "superseded": -2}.get(item["status"], 0)
-            return authority, matches, -float(item.get("rank") or 0)
+            return authority, matches, -float(item.get("_retrieval_rank") or 0)
         items.sort(key=relevance, reverse=True)
+        for item in items:
+            item.pop("_retrieval_rank", None)
         return items[:limit], meta
     finally:
         db.close()
