@@ -418,8 +418,8 @@ def check_final_evidence(ticket):
 def validate_config():
     expected = ["intelligence", "analysis", "design", "plan", "execute", "verify", "learn", "final"]
     errors = []
-    if config_value(CONFIG, "version") != "3.0.0":
-        errors.append("version must be 3.0.0")
+    if config_value(CONFIG, "version") != "3.1.0":
+        errors.append("version must be 3.1.0")
     if config_value(CONFIG, "workflow", "phases") != expected:
         errors.append("workflow.phases does not match the v3 lifecycle")
     for path in ["workflow", "design", "execution", "learning", "knowledge", "state", "templates"]:

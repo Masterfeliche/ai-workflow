@@ -1,0 +1,5 @@
+.ai-workflow/cache/
+.ai-workflow/state/
+.ai-workflow-state.json
+__pycache__/
+*.py[cod]

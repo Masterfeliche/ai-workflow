@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.1.0
+
+- Added local UEKB indexing, lexical retrieval, scoped context assembly and provenance output.
+- Added a rebuildable SQLite FTS5 index with a portable SQLite LIKE fallback.
+- Added secret screening, restricted-record exclusion, project scoping and retrieval smoke tests.
+
+
 ## 3.0.0
 
 - Added an explicit System Design phase to the feature lifecycle.
