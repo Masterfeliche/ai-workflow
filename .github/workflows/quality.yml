@@ -22,3 +22,9 @@ jobs:
         run: python -c "import json,pathlib; [json.loads(p.read_text()) for p in pathlib.Path('schemas').glob('*.json')]"
       - name: Run tests
         run: python -m unittest discover -s tests -v
+      - name: Build local knowledge index
+        run: python scripts/uekb.py index --project-id ai-workflow
+      - name: Smoke-test knowledge retrieval
+        run: python scripts/uekb.py search "system design architecture" --limit 3
+      - name: Check knowledge index
+        run: python scripts/uekb.py status
