@@ -2,7 +2,7 @@ name: Workflow Quality
 
 on:
   push:
-    branches: ["main", "v3/**"]
+    branches: ["main", "v3/**", "feature/**"]
   pull_request:
   workflow_dispatch:
 
