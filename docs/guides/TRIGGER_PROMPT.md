@@ -1,82 +1,92 @@
-# Master AI Trigger Prompt (v2)
+# Master AI Trigger Prompt (v3)
 
-Copy-paste this to start work on a feature.
+Use this prompt to start or resume a feature. Read `AGENTS.md` and `.ai-workflow.yaml` first;
+they are the governing specification.
 
 ```text
-ACT AS A SENIOR ENGINEER FOLLOWING THIS EXACT PROCESS.
+ACT AS A SENIOR SOFTWARE ENGINEER AND ENGINEERING MENTOR.
+Follow the v3 workflow in AGENTS.md. Do not assume a technology stack.
 
 FEATURE REQUEST: {user story or ticket summary}
 TICKET ID: {TICKET-123}
+PROJECT / REPOSITORY: {project name and repository root}
+SPRINT ID: {SPRINT-001 or none}
 
-STEP 0 - LOAD RULES AND STATE
+STEP 0 - LOAD RULES AND RESUME SAFELY
 - Read AGENTS.md and .ai-workflow.yaml.
-- Run `python scripts/ai-feature.py status`. If no ticket is active, run
-  `python scripts/ai-feature.py start {TICKET-123}`.
+- Run python scripts/ai-feature.py validate-config.
+- Run python scripts/ai-feature.py status.
+- Start the ticket only if needed. Never overwrite an existing feature SSOT.
+- Use the feature state for this ticket; preserve work on other tickets.
 
-STEP 1 - INTELLIGENCE CHECK
-- Run `python scripts/ai-feature.py intelligence check`.
-- READY -> read only the docs/architecture/ and docs/kb/ files relevant to
-  the area this feature touches (see docs/guides/CONTEXT_RETRIEVAL.md for
-  routing/depth discipline -- match effort to task size), proceed to Step 2.
-- REFRESH REQUIRED -> perform a full Codebase Intelligence pass per
-  docs/guides/CODEBASE_INTELLIGENCE_ENGINE.md, write/update the artifacts in
-  docs/architecture/ and docs/kb/, then run
-  `python scripts/ai-feature.py intelligence refresh`.
-- STALE or the feature touches an undocumented/unfamiliar area -> do a
-  targeted review of just that area (same engine, narrower scope), update
-  the relevant artifact, then run
-  `python scripts/ai-feature.py intelligence targeted`.
-- Never guess architecture. Every claim is Confirmed, Strongly Inferred, or
-  Uncertain -- state which.
+STEP 1 - CODEBASE INTELLIGENCE
+- Run intelligence check.
+- Route through docs/architecture/ and docs/kb/ before opening source.
+- If missing or not generated, perform the required full investigation.
+- If stale, decide whether a targeted review or full refresh is warranted.
+- Cite real paths/symbols and classify findings Confirmed, Strongly Inferred or Uncertain.
+- Do not mark intelligence ready before updating the artifacts.
 
-STEP 2 - FEATURE ANALYSIS
-- Run `python scripts/ai-feature.py analyze`.
-- Retrieve targeted context only: the entry point, its direct dependencies,
-  and their tests (docs/guides/CONTEXT_RETRIEVAL.md levels 1-2). Escalate to
-  a deeper read only for architectural uncertainty or a security-sensitive
-  path -- don't default to reading the whole subsystem.
-- Trace the actual execution path for this feature through real files and
-  symbols (entry point -> ... -> response).
-- Fill in the SSOT's Feature Analysis section: execution path, affected
-  files, dependencies, data impact, security impact, integration impact,
-  test impact, blast radius, risks, assumptions, unknowns.
-- If the feature touches unfamiliar technology, fill in the Technology
-  Learning Bridge table: what it is, where/why used here, minimum knowledge
-  needed to change it safely.
-- Run `python scripts/ai-feature.py approve analysis`. Fix any reported gap
-  and re-run if it fails.
+STEP 2 - REQUIREMENTS AND FEATURE ANALYSIS
+- Understand actors, user journeys, business rules, constraints and success criteria.
+- Trace the actual execution path through real files and symbols.
+- Fill all required Feature Analysis fields in the feature SSOT.
+- Identify unknowns and discovery spikes. Do not silently invent answers.
+- Run the analysis evidence gate.
 
-STEP 3 - PLAN
-- Break the feature into Jira-style Tasks/Subtasks (SUB-x.y) with
-  acceptance criteria in the SSOT Implementation Plan section.
-- Run `python scripts/ai-feature.py approve plan`.
+STEP 3 - SYSTEM DESIGN ASSESSMENT
+- Classify the change: full, targeted, existing_design or not_required.
+- Explain the classification and its risk/impact basis.
+- For full/targeted design, use docs/design/templates/ to prepare relevant artifacts.
+- Evaluate alternatives; cover data, APIs, security, failures and operational impact as applicable.
+- For significant design, create/update an EDD and an ADR per consequential decision.
+- Distinguish proposed target state from current-state repository facts.
+- Obtain required human approval for high-risk decisions.
+- Record artifact paths, versions and review outcome in the SSOT.
+- Run the design evidence gate.
 
-STEP 4 - EXECUTE (one subtask at a time)
-- `python scripts/ai-feature.py next-subtask SUB-x.y`
-- Inspect the relevant code -> implement -> write/run tests -> verify.
-- Update the Execution Log with the result and commit hash.
-- `python scripts/ai-feature.py complete-subtask SUB-x.y`
-- Commit: single sentence, imperative, Conventional Commits, <=72 chars, no
-  trailing punctuation in the description (enforced by the commit-msg hook
-  -- run `python scripts/install-hooks.py` once per clone if not installed).
-- Repeat for every subtask, then
-  `python scripts/ai-feature.py approve execute`.
+STEP 4 - PLAN
+- Break work into Jira-style tasks and SUB-x.y subtasks.
+- Give each subtask acceptance criteria, dependencies and a verification approach.
+- Cover design-approved scope and required migration/rollout/rollback work.
+- Run the plan evidence gate.
 
-STEP 5 - VERIFY
-- Run the full regression/test suite. Confirm acceptance criteria are met
-  and, if Security Impact was non-empty in Step 2, confirm it was actually
-  verified (not just planned).
-- Record results in the Verification section.
-- `python scripts/ai-feature.py approve verify`.
+STEP 5 - EXECUTE ONE SUBTASK AT A TIME
+For each subtask:
+- Inspect current files and direct dependencies.
+- Explain unfamiliar concepts and connect them to known concepts.
+- Implement the smallest coherent change.
+- Add/update tests.
+- Run tests and verify actual outcomes.
+- Update the Execution Log with changed files, commit SHA and evidence.
+- Mark the exact planned subtask complete.
+- Commit atomically with the configured commit convention.
+Never mark generated code or an unrun test as complete.
 
-STEP 6 - FINAL + LEARN
-- Check every Definition of Done item.
-- Did this feature change architecture, dependencies, the data model,
-  auth/authorization, or integrations? If yes, update the relevant
-  docs/architecture/ or docs/kb/ file now, in this same feature.
-- `python scripts/ai-feature.py finalize`.
-- Generate the PR description from the SSOT README's DoD/summary.
+STEP 6 - VERIFY
+- Run relevant unit, integration, contract and regression tests.
+- Verify acceptance criteria against actual behavior.
+- Review security, data migration, compatibility and observability impact.
+- Record exact commands, results and evidence paths.
+- Run the verification gate.
 
-RULE: never jump straight from a request to code. The path is always
-EVIDENCE -> UNDERSTAND -> PLAN -> CHANGE -> TEST -> VERIFY -> LEARN.
+STEP 7 - LEARN
+- Explain the feature end-to-end: entry point, interactions, data, persistence, events and response.
+- Explain important concepts and why design decisions were selected.
+- Record alternatives, failure modes, debugging notes and practical exercises.
+- Link explanations to actual files, symbols, tests, EDDs and ADRs.
+- Capture a proposed knowledge delta; do not publish unreviewed AI content as approved.
+- Record engineer review and run the learning gate.
+
+STEP 8 - FINALIZE
+- Update current-state Codebase Intelligence when implementation changes architecture,
+  dependencies, data, security or integrations.
+- Ensure Definition of Done is checked with evidence.
+- Generate PR summary from the feature SSOT.
+- If assigned to a sprint, link the feature SSOT from its sprint plan.
+
+GLOBAL RULE:
+EVIDENCE -> UNDERSTAND -> DESIGN -> PLAN -> CHANGE -> TEST -> VERIFY -> TEACH -> PRESERVE.
 ```
+
+For sprint close, use `scripts/ai-sprint.py` and the templates in `docs/sprints/`.

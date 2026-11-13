@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AI Workflow Configuration Contract",
+  "type": "object",
+  "required": ["version", "workflow", "commit_rule", "intelligence", "feature_analysis", "design", "execution", "learning", "knowledge", "state", "templates", "docs"],
+  "properties": {
+    "version": {"const": "3.0.0"},
+    "workflow": {"type": "object", "required": ["phases", "jira_style", "design_assessment_required"], "properties": {"phases": {"const": ["intelligence", "analysis", "design", "plan", "execute", "verify", "learn", "final"]}, "jira_style": {"type": "boolean"}, "design_assessment_required": {"type": "boolean"}, "human_approval_for_high_risk": {"type": "boolean"}}, "additionalProperties": true},
+    "commit_rule": {"type": "object"},
+    "intelligence": {"type": "object"},
+    "feature_analysis": {"type": "object"},
+    "design": {"type": "object"},
+    "execution": {"type": "object"},
+    "learning": {"type": "object"},
+    "knowledge": {"type": "object"},
+    "state": {"type": "object"},
+    "templates": {"type": "object"},
+    "docs": {"type": "object"}
+  },
+  "additionalProperties": true
+}
