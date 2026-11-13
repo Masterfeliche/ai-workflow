@@ -58,7 +58,7 @@ class FeatureGateTests(unittest.TestCase):
 """
         self.assertEqual(feature.planned_subtasks(doc), ["SUB-1.1"])
 
-    def test_duplicate_or_invalid_task_keys_not_returned(self):
+    def test_duplicate_keys_remain_visible_for_gate_and_invalid_keys_are_ignored(self):
         doc = """## 3. Implementation Plan
 | Subtask Key | Summary | Acceptance Criteria |
 |---|---|---|
