@@ -46,7 +46,7 @@ def validate_message(message, policy=None):
     types = "|".join(re.escape(item) for item in policy["types"])
     pattern = rf"^({types})(\([A-Za-z0-9._/-]+\))?: ([a-z][a-z0-9 -]+)$"
     if not re.fullmatch(pattern, message):
-        return False, "use type(scope): lowercase imperative description with a simple scope"
+        return False, "use type(scope): lowercase description with a simple scope"
     description = message.split(": ", 1)[1] if ": " in message else message
     if any(mark in description for mark in policy["forbidden_punctuation"]):
         return False, "description contains forbidden punctuation"
