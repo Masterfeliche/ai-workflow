@@ -1,6 +1,6 @@
 # AI Engineering Workflow
 
-**Framework version: 3.0.0**
+**Framework version: 3.1.0**
 
 A technology-independent, evidence-oriented workflow for AI-assisted software engineering.
 

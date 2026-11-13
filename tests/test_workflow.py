@@ -22,7 +22,7 @@ commit = load_module("commit_msg", "scripts/commit-msg.py")
 class ConfigTests(unittest.TestCase):
     def test_v3_config_loads_expected_phases(self):
         config = feature.load_config()
-        self.assertEqual(config["version"], "3.0.0")
+        self.assertEqual(config["version"], "3.1.0")
         self.assertEqual(config["workflow"]["phases"], ["intelligence", "analysis", "design", "plan", "execute", "verify", "learn", "final"])
 
     def test_config_validation_passes(self):

@@ -1,6 +1,6 @@
 # AI Engineering Workflow Specification (v3)
 
-Version: 3.0.0  
+Version: 3.1.0  
 Status: Active specification  
 Scope: Technology-independent, repository-resident engineering workflow
 

@@ -1,6 +1,6 @@
 # AI Workflow v3 configuration. Runtime-owned settings are validated by scripts/ai-feature.py validate-config.
 # Keep this file technology-independent; project stacks belong to project context.
-version: "3.0.0"
+version: "3.1.0"
 workflow:
   phases: [intelligence, analysis, design, plan, execute, verify, learn, final]
   jira_style: true
